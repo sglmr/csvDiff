@@ -1,0 +1,40 @@
+{{define "page:title"}}Contact Us{{end}}
+
+{{define "page:main"}}
+<article>
+    <h1>Contact Us</h1>
+
+    {{if .Form.HasErrors}}
+    <p style="max-width:400px;color:red;">Please correct the errors below.</p>
+    {{end}}
+
+    <form method="POST">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="form-group">
+            <label for="name">Name</label>
+            <input type="text" id="name" name="name" value="{{.Form.Name}}">
+            {{if .Form.Errors.Name}}
+            <small style="color:red;">{{.Form.Errors.Name}}</small>
+            {{end}}
+        </div>
+
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" value="{{.Form.Email}}">
+            {{if .Form.Errors.Email}}
+            <small style="color:red;">{{.Form.Errors.Email}}</small>
+            {{end}}
+        </div>
+
+        <div class="form-group">
+            <label for="message">Message</label>
+            <textarea id="message" name="message" rows="5">{{.Form.Message}}</textarea>
+            {{if .Form.Errors.Message}}
+            <small style="color:red;">{{.Form.Errors.Message}}</small>
+            {{end}}
+        </div>
+
+        <input type="submit" value="Submit">
+    </form>
+</article>
+{{end}}

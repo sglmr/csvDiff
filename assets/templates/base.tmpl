@@ -1,0 +1,24 @@
+{{define "base"}}
+<!doctype html>
+<html lang='en'>
+    <head>
+        <meta charset='utf-8'>
+        <title>{{template "page:title" .}}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        {{block "page:meta" .}}{{end}}
+        
+        <link rel="stylesheet" href="/static/css/pico.min.css?v={{.Version}}">
+        <link rel='stylesheet' href='/static/css/main.css?version={{.Version}}'>
+    </head>
+    <body>
+        <header class="container">
+            {{template "partial:nav" .}}
+        </header>
+        <main class="container">
+            {{template "partial:flashMessages" .}}
+            {{template "page:main" .}}
+        </main>
+        {{template "partial:footer" .}}
+    </body>
+</html>
+{{end}}
