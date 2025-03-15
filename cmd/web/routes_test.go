@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/sglmr/gowebstart/internal/assert"
-	"github.com/sglmr/gowebstart/internal/vcs"
+	"github.com/sglmr/csvdiff/internal/assert"
+	"github.com/sglmr/csvdiff/internal/vcs"
 )
 
 func TestHealth(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"html/template"
 	"net/http"
 
-	"github.com/sglmr/gowebstart/assets"
-	"github.com/sglmr/gowebstart/internal/funcs"
+	"github.com/sglmr/csvdiff/assets"
+	"github.com/sglmr/csvdiff/internal/funcs"
 )
 
 // Page renders a template page with the provided data and HTTP status code.

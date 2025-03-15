@@ -14,9 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"reflect"
 	"regexp"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -24,12 +22,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/alexedwards/scs/v2"
-	"github.com/justinas/nosurf"
-	"github.com/sglmr/gowebstart/assets"
-	"github.com/sglmr/gowebstart/internal/email"
-	"github.com/sglmr/gowebstart/internal/render"
-	"github.com/sglmr/gowebstart/internal/vcs"
+	"github.com/sglmr/csvdiff/assets"
+	"github.com/sglmr/csvdiff/internal/render"
+	"github.com/sglmr/csvdiff/internal/vcs"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/exp/constraints"
 )
@@ -51,20 +46,13 @@ func main() {
 }
 
 // NewServer is a constructor that takes in all dependencies as arguments
-func NewServer(
-	logger *slog.Logger,
-	devMode bool,
-	mailer email.MailerInterface,
-	username, password string,
-	wg *sync.WaitGroup,
-	sessionManager *scs.SessionManager,
-) http.Handler {
+func NewServer(logger *slog.Logger, devMode bool) http.Handler {
 	// Create a serve mux
 	logger.Debug("creating server")
 	mux := http.NewServeMux()
 
 	// Register the home handler for the root route
-	httpHandler := AddRoutes(mux, logger, devMode, mailer, username, password, wg, sessionManager)
+	httpHandler := AddRoutes(mux, logger, devMode)
 
 	return httpHandler
 }
@@ -88,13 +76,6 @@ func RunApp(
 	host := fs.String("host", "0.0.0.0", "Server host")
 	port := fs.String("port", "", "Server port")
 	devMode := fs.Bool("dev", false, "Development mode. Displays stack trace & more verbose logging")
-	username := fs.String("username", "admin", "Username basic auth")
-	password := fs.String("password", `$2a$10$yIdGuTfOlZEA00kpreh2yuTihYQs9WAjeoIu/81AMWTVt9.Ocef5O`, "Password for basic auth ('password' by default)")
-	smtpHost := fs.String("smtp-host", "", "Email smtp host")
-	smtpPort := fs.Int("smtp-port", 25, "Email smtp port")
-	smtpUsername := fs.String("smtp-username", "", "Email smtp username")
-	smtpPassword := fs.String("smtp-password", "", "Email smtp password")
-	smtpFrom := fs.String("smtp-from", "Eample Name <no-reply@example.com>", "Email smtp Sender")
 
 	// Parse the flags
 	err := fs.Parse(args[1:])
@@ -117,30 +98,18 @@ func RunApp(
 		Level: logLevel,
 	}))
 
-	// Create a mailer for sending emails
-	var mailer email.MailerInterface
 	switch {
 	case *devMode:
 		// Change log level to debug
 		logLevel.Set(slog.LevelDebug)
 
-		// Configure email to send to log
-		mailer = email.NewLogMailer(logger)
 	default:
-		// Configure a mailer to send real emails
-		mailer, err = email.NewMailer(*smtpHost, *smtpPort, *smtpUsername, *smtpPassword, *smtpFrom)
-		if err != nil {
-			logger.Error("smtp configuration error", "error", err)
-			return fmt.Errorf("smtp mailer setup failed: %w", err)
-		}
+		// Change log level to warn
+		logLevel.Set(slog.LevelWarn)
 	}
 
-	// Session manager configuration
-	sessionManager := scs.New()
-	sessionManager.Lifetime = 24 * time.Hour
-
 	// Set up router
-	srv := NewServer(logger, *devMode, mailer, *username, *password, &wg, sessionManager)
+	srv := NewServer(logger, *devMode)
 
 	// Configure an http server
 	httpServer := &http.Server{
@@ -193,70 +162,27 @@ func RunApp(
 	return nil
 }
 
-// BackgroundTask executes a function in a background goroutine with proper error handling.
-func BackgroundTask(wg *sync.WaitGroup, logger *slog.Logger, fn func() error) {
-	// Increment waitgroup to track whether this background task is complete or not
-	wg.Add(1)
-
-	// Launch a goroutine to run the task in
-	go func() {
-		// decrement the waitgroup after the task completes
-		defer wg.Done()
-
-		// Get the name of the function
-		funcName := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
-
-		// Recover any panics in the task function so that
-		// a panic doesn't kill the whole application
-		defer func() {
-			err := recover()
-			if err != nil {
-				logger.Error("task", "name", funcName, "error", fmt.Errorf("%s", err))
-			}
-		}()
-
-		// Execute the provided function, logging any errors
-		err := fn()
-		if err != nil {
-			logger.Error("task", "name", funcName, "error", err)
-		}
-	}()
-}
-
 //=============================================================================
 // Helper functions
 //=============================================================================
 
 // AddRoutes adds all the routes to the mux
-func AddRoutes(
-	mux *http.ServeMux,
-	logger *slog.Logger,
-	devMode bool,
-	mailer email.MailerInterface,
-	username, password string,
-	wg *sync.WaitGroup,
-	sessionManager *scs.SessionManager,
-) http.Handler {
+func AddRoutes(mux *http.ServeMux, logger *slog.Logger, devMode bool) http.Handler {
 	// Set up file server for embedded static files
 	// fileserver := http.FileServer(http.FS(assets.EmbeddedFiles))
 	fileServer := http.FileServer(http.FS(staticFileSystem{assets.EmbeddedFiles}))
 	mux.Handle("GET /static/", CacheControlMW("31536000")(fileServer))
 
-	mux.Handle("GET /", home(logger, devMode, sessionManager))
-	// TODO: Figure out how to wrap this with nosurf
-	c := contact(logger, devMode, wg, mailer, sessionManager)
-	mux.Handle("GET /contact/", CsrfMW(c))
-	mux.Handle("POST /contact/", CsrfMW(c))
+	mux.Handle("GET /", home(logger, devMode))
 	mux.Handle("GET /health/", health())
-	mux.Handle("GET /send-mail", sendEmail(mailer, logger, wg))
-
-	mux.Handle("GET /protected/", BasicAuthMW(username, password, logger, devMode)(protected()))
+	// TODO: Figure out how to wrap this with nosurf
+	mux.Handle("GET /contact/", contact(logger, devMode))
+	mux.Handle("POST /contact/", contact(logger, devMode))
 
 	// Add recoverPanic middleware
 	handler := RecoverPanicMW(mux, logger, devMode)
 	handler = SecureHeadersMW(handler)
 	handler = LogRequestMW(logger)(handler)
-	handler = sessionManager.LoadAndSave(handler)
 
 	// Return the handler
 	return handler
@@ -296,11 +222,7 @@ func BadRequest(w http.ResponseWriter, r *http.Request, err error) {
 //=============================================================================
 
 // home handles the root route
-func home(
-	logger *slog.Logger,
-	showTrace bool,
-	sessionManager *scs.SessionManager,
-) http.HandlerFunc {
+func home(logger *slog.Logger, showTrace bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Redirect non-root paths to root
 		// TODO: write a test for this someday
@@ -308,10 +230,8 @@ func home(
 			NotFound(w, r)
 			return
 		}
-		putFlashMessage(r, LevelSuccess, "Welcome!", sessionManager)
-		putFlashMessage(r, LevelSuccess, "You made it!", sessionManager)
 
-		data := newTemplateData(r, sessionManager)
+		data := newTemplateData(r)
 
 		if err := render.Page(w, http.StatusOK, data, "home.tmpl"); err != nil {
 			ServerError(w, r, err, logger, showTrace)
@@ -321,13 +241,7 @@ func home(
 }
 
 // contact handles rendering a contact page
-func contact(
-	logger *slog.Logger,
-	showTrace bool,
-	wg *sync.WaitGroup,
-	mailer email.MailerInterface,
-	sessionManager *scs.SessionManager,
-) http.HandlerFunc {
+func contact(logger *slog.Logger, showTrace bool) http.HandlerFunc {
 	type contactForm struct {
 		Name    string
 		Email   string
@@ -335,7 +249,7 @@ func contact(
 		Validator
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		data := newTemplateData(r, sessionManager)
+		data := newTemplateData(r)
 		data["Form"] = contactForm{}
 
 		if r.Method == http.MethodPost {
@@ -362,10 +276,7 @@ func contact(
 			form.Check(MaxRunes(form.Message, 1000), "Message", "Message must be less than 1,000 characters.")
 
 			if form.Valid() {
-				// Email the form message
-				BackgroundTask(wg, logger, func() error {
-					return mailer.Send("Recipient <recipient@example.com>", "Reply-To <reply-to@example.com>", form, "example.tmpl")
-				})
+				// TODO: do something with the valid form
 				// Render the contact success page
 				err := render.Page(w, http.StatusFound, data, "contact-success.tmpl")
 				if err != nil {
@@ -389,22 +300,6 @@ func contact(
 	}
 }
 
-// sendEmail sends out a background email task
-func sendEmail(mailer email.MailerInterface, logger *slog.Logger, wg *sync.WaitGroup) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "Email queued")
-		emailData := map[string]any{
-			"Name": "Person",
-		}
-		BackgroundTask(
-			wg, logger,
-			func() error {
-				return mailer.Send("Recipient <recipient@example.com>", "Reply-To <reply-to@example.com>", emailData, "example.tmpl")
-			})
-	}
-}
-
 // health handles a healthcheck response "OK"
 func health() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -414,29 +309,14 @@ func health() http.HandlerFunc {
 	}
 }
 
-// protected handles a page protected by basic authentication.
-func protected() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "You're visiting a protected page!")
-	}
-}
-
 //=============================================================================
 // Validation helpers
 //=============================================================================
 
 // newTemplateData constructs a map of data to pass into templates
-func newTemplateData(r *http.Request, sessionManager *scs.SessionManager) map[string]any {
-	messages, ok := sessionManager.Pop(r.Context(), "messages").([]FlashMessage)
-	if !ok {
-		messages = []FlashMessage{}
-	}
-
+func newTemplateData(r *http.Request) map[string]any {
 	return map[string]any{
-		"CSRFToken": nosurf.Token(r),
-		"Messages":  messages,
-		"Version":   vcs.Version(),
+		"Version": vcs.Version(),
 	}
 }
 
@@ -534,17 +414,6 @@ func LogRequestMW(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// CsrfMW protects specific routes against CSRF.
-func CsrfMW(next http.Handler) http.Handler {
-	csrfHandler := nosurf.New(next)
-	csrfHandler.SetBaseCookie(http.Cookie{
-		HttpOnly: true,
-		Path:     "/",
-		Secure:   true,
-	})
-	return csrfHandler
 }
 
 // BasicAuthMW restricts routes for basic authentication
@@ -711,46 +580,4 @@ func IsURL(value string) bool {
 	}
 
 	return u.Scheme != "" && u.Host != ""
-}
-
-//=============================================================================
-// Flash Message functions
-//=============================================================================
-
-type contextKey string
-
-const flashMessageKey = "messages"
-
-type FlashMessageLevel string
-
-const (
-	// Different FlashMessageLevel types
-	LevelSuccess FlashMessageLevel = "success"
-	LevelError   FlashMessageLevel = "error"
-	LevelWarning FlashMessageLevel = "warning"
-	LevelInfo    FlashMessageLevel = "info"
-)
-
-type FlashMessage struct {
-	Level   FlashMessageLevel
-	Message string
-}
-
-// putFlashMessage adds a flash message into the session manager
-func putFlashMessage(r *http.Request, level FlashMessageLevel, message string, sessionManager *scs.SessionManager) {
-	newMessage := FlashMessage{
-		Level:   level,
-		Message: message,
-	}
-
-	// Create a new flashMessageKey context key if one doesn't exist and add the message
-	messages, ok := sessionManager.Get(r.Context(), flashMessageKey).([]FlashMessage)
-	if !ok {
-		sessionManager.Put(r.Context(), flashMessageKey, []FlashMessage{newMessage})
-		return
-	}
-
-	// Add a flash message to an existing flashMessageKey context key
-	messages = append(messages, newMessage)
-	sessionManager.Put(r.Context(), flashMessageKey, messages)
 }
