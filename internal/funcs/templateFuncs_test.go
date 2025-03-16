@@ -3,7 +3,7 @@ package funcs
 import (
 	"testing"
 
-	"gotest.tools/assert"
+	"github.com/sglmr/csvdiff/internal/assert"
 )
 
 // TestSlugify runs a series of tests on the slugify function

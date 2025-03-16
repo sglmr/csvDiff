@@ -1,6 +1,39 @@
-{{define "page:title"}}Example page{{end}}
+{{define "page:title"}}CSV Diff{{end}}
 
 {{define "page:main"}}
-<h1>Example Page</h1>
-<p>This is an example page.</p>
+
+<form method="post" enctype="multipart/form-data">
+    {{if .Form.Errors.Form}}
+    <p style="color:red">{{.Form.Errors.Form}}</p>
+    {{end}}
+    <fieldset>
+        <!-- Key Field -->
+        <label for="key"><strong>Key field:</strong></label>
+        {{if .Form.Errors.Key}}
+        <small style="color:red;">{{.Form.Errors.Key}}</small>
+        {{end}}
+        <input type="text" id="key" name="key" required>
+        <small>Name of the field to uniquely identify rows in the files.</small>
+
+        <!-- First CSV File -->
+        <label for="file1"><strong>First CSV File:</strong></label>
+        {{if .Form.Errors.File1}}
+        <small style="color:red;">{{.Form.Errors.File1}}</small>
+        {{end}}
+        <input type="file" id="file1" name="file1" accept=".csv" class="file-input" required>
+        <small>Select the first CSV file to upload</small>
+
+        <!-- Second CSV File -->
+        <label for="file2"><strong>Second CSV File:</strong></label>
+        {{if .Form.Errors.File2}}
+        <small style="color:red;">{{.Form.Errors.File2}}</small>
+        {{end}}
+        <input type="file" id="file2" name="file2" accept=".csv" class="file-input" required>
+        <small>Select the second CSV file to upload</small>
+
+        <!-- Submit -->
+        <input type="submit" value="Upload" style="max-width:200px">
+    </fieldset>
+
+</form>
 {{end}}

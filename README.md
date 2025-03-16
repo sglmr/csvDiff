@@ -44,11 +44,11 @@ This project assumes you will be running it behind a reverse proxy service that 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/sglmr/gowebstart.git
-cd gowebstart
+git clone https://github.com/sglmr/csvdiff.git
+cd csvdiff
 ```
 
-2. Replace "gowebstart" with your new project name.
+2. Replace "csvdiff" with your new project name.
 
 3. Build the project:
 
@@ -88,7 +88,7 @@ This will start the server on the default address `0.0.0.0:8000`.
 Example with custom options:
 
 ```bash
-./gowebstart -port=3000 -dev -smtp-host=smtp.example.com -smtp-port=587 -smtp-username=user -smtp-password=pass
+./csvdiff -port=3000 -dev -smtp-host=smtp.example.com -smtp-port=587 -smtp-username=user -smtp-password=pass
 ```
 
 ## SMTP Emails

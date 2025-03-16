@@ -11,12 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
-
-	"github.com/alexedwards/scs/v2"
-	"github.com/alexedwards/scs/v2/memstore"
-	"github.com/sglmr/gowebstart/internal/email"
 )
 
 type testServer struct {
@@ -31,21 +26,8 @@ func newTestServer(t *testing.T) *testServer {
 	// Create an io.Discard logger for testing
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))
 
-	// Initialize a new session manager with the cleanup goroutine disabled
-	sessionManager := scs.New()
-	sessionManager.Store = memstore.NewWithCleanupInterval(0)
-	sessionManager.Cookie.Secure = true
-
-	// Create a test mailer (io.Discard)
-	mailer := email.NewLogMailer(logger)
-
-	// Initialize other required vairables for routes
-	username := "test@example.com"
-	password := `$2a$10$yIdGuTfOlZEA00kpreh2yuTihYQs9WAjeoIu/81AMWTVt9.Ocef5O` // 'password'
-	wg := sync.WaitGroup{}
-
 	// Create the httpHandler
-	handler := AddRoutes(mux, logger, false, mailer, username, password, &wg, sessionManager)
+	handler := AddRoutes(mux, logger, false)
 
 	// Initialize a new test server
 	ts := httptest.NewTLSServer(handler)

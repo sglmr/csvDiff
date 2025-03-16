@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,13 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"reflect"
-	"regexp"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -24,14 +19,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/alexedwards/scs/v2"
-	"github.com/justinas/nosurf"
-	"github.com/sglmr/gowebstart/assets"
-	"github.com/sglmr/gowebstart/internal/email"
-	"github.com/sglmr/gowebstart/internal/render"
-	"github.com/sglmr/gowebstart/internal/vcs"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/exp/constraints"
+	"github.com/sglmr/csvdiff/assets"
+	"github.com/sglmr/csvdiff/internal/render"
+	"github.com/sglmr/csvdiff/internal/vcs"
 )
 
 //=============================================================================
@@ -51,20 +41,13 @@ func main() {
 }
 
 // NewServer is a constructor that takes in all dependencies as arguments
-func NewServer(
-	logger *slog.Logger,
-	devMode bool,
-	mailer email.MailerInterface,
-	username, password string,
-	wg *sync.WaitGroup,
-	sessionManager *scs.SessionManager,
-) http.Handler {
+func NewServer(logger *slog.Logger, devMode bool) http.Handler {
 	// Create a serve mux
 	logger.Debug("creating server")
 	mux := http.NewServeMux()
 
 	// Register the home handler for the root route
-	httpHandler := AddRoutes(mux, logger, devMode, mailer, username, password, wg, sessionManager)
+	httpHandler := AddRoutes(mux, logger, devMode)
 
 	return httpHandler
 }
@@ -88,13 +71,6 @@ func RunApp(
 	host := fs.String("host", "0.0.0.0", "Server host")
 	port := fs.String("port", "", "Server port")
 	devMode := fs.Bool("dev", false, "Development mode. Displays stack trace & more verbose logging")
-	username := fs.String("username", "admin", "Username basic auth")
-	password := fs.String("password", `$2a$10$yIdGuTfOlZEA00kpreh2yuTihYQs9WAjeoIu/81AMWTVt9.Ocef5O`, "Password for basic auth ('password' by default)")
-	smtpHost := fs.String("smtp-host", "", "Email smtp host")
-	smtpPort := fs.Int("smtp-port", 25, "Email smtp port")
-	smtpUsername := fs.String("smtp-username", "", "Email smtp username")
-	smtpPassword := fs.String("smtp-password", "", "Email smtp password")
-	smtpFrom := fs.String("smtp-from", "Eample Name <no-reply@example.com>", "Email smtp Sender")
 
 	// Parse the flags
 	err := fs.Parse(args[1:])
@@ -117,30 +93,18 @@ func RunApp(
 		Level: logLevel,
 	}))
 
-	// Create a mailer for sending emails
-	var mailer email.MailerInterface
 	switch {
 	case *devMode:
 		// Change log level to debug
 		logLevel.Set(slog.LevelDebug)
 
-		// Configure email to send to log
-		mailer = email.NewLogMailer(logger)
 	default:
-		// Configure a mailer to send real emails
-		mailer, err = email.NewMailer(*smtpHost, *smtpPort, *smtpUsername, *smtpPassword, *smtpFrom)
-		if err != nil {
-			logger.Error("smtp configuration error", "error", err)
-			return fmt.Errorf("smtp mailer setup failed: %w", err)
-		}
+		// Change log level to warn
+		logLevel.Set(slog.LevelWarn)
 	}
 
-	// Session manager configuration
-	sessionManager := scs.New()
-	sessionManager.Lifetime = 24 * time.Hour
-
 	// Set up router
-	srv := NewServer(logger, *devMode, mailer, *username, *password, &wg, sessionManager)
+	srv := NewServer(logger, *devMode)
 
 	// Configure an http server
 	httpServer := &http.Server{
@@ -193,70 +157,26 @@ func RunApp(
 	return nil
 }
 
-// BackgroundTask executes a function in a background goroutine with proper error handling.
-func BackgroundTask(wg *sync.WaitGroup, logger *slog.Logger, fn func() error) {
-	// Increment waitgroup to track whether this background task is complete or not
-	wg.Add(1)
-
-	// Launch a goroutine to run the task in
-	go func() {
-		// decrement the waitgroup after the task completes
-		defer wg.Done()
-
-		// Get the name of the function
-		funcName := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
-
-		// Recover any panics in the task function so that
-		// a panic doesn't kill the whole application
-		defer func() {
-			err := recover()
-			if err != nil {
-				logger.Error("task", "name", funcName, "error", fmt.Errorf("%s", err))
-			}
-		}()
-
-		// Execute the provided function, logging any errors
-		err := fn()
-		if err != nil {
-			logger.Error("task", "name", funcName, "error", err)
-		}
-	}()
-}
-
 //=============================================================================
 // Helper functions
 //=============================================================================
 
 // AddRoutes adds all the routes to the mux
-func AddRoutes(
-	mux *http.ServeMux,
-	logger *slog.Logger,
-	devMode bool,
-	mailer email.MailerInterface,
-	username, password string,
-	wg *sync.WaitGroup,
-	sessionManager *scs.SessionManager,
-) http.Handler {
+func AddRoutes(mux *http.ServeMux, logger *slog.Logger, devMode bool) http.Handler {
 	// Set up file server for embedded static files
 	// fileserver := http.FileServer(http.FS(assets.EmbeddedFiles))
 	fileServer := http.FileServer(http.FS(staticFileSystem{assets.EmbeddedFiles}))
 	mux.Handle("GET /static/", CacheControlMW("31536000")(fileServer))
 
-	mux.Handle("GET /", home(logger, devMode, sessionManager))
-	// TODO: Figure out how to wrap this with nosurf
-	c := contact(logger, devMode, wg, mailer, sessionManager)
-	mux.Handle("GET /contact/", CsrfMW(c))
-	mux.Handle("POST /contact/", CsrfMW(c))
-	mux.Handle("GET /health/", health())
-	mux.Handle("GET /send-mail", sendEmail(mailer, logger, wg))
+	mux.Handle("GET /", home(logger, devMode))
+	mux.Handle("POST /", home(logger, devMode))
 
-	mux.Handle("GET /protected/", BasicAuthMW(username, password, logger, devMode)(protected()))
+	mux.Handle("GET /health/", health())
 
 	// Add recoverPanic middleware
 	handler := RecoverPanicMW(mux, logger, devMode)
 	handler = SecureHeadersMW(handler)
 	handler = LogRequestMW(logger)(handler)
-	handler = sessionManager.LoadAndSave(handler)
 
 	// Return the handler
 	return handler
@@ -296,11 +216,11 @@ func BadRequest(w http.ResponseWriter, r *http.Request, err error) {
 //=============================================================================
 
 // home handles the root route
-func home(
-	logger *slog.Logger,
-	showTrace bool,
-	sessionManager *scs.SessionManager,
-) http.HandlerFunc {
+func home(logger *slog.Logger, showTrace bool) http.HandlerFunc {
+	type Form struct {
+		Validator
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Redirect non-root paths to root
 		// TODO: write a test for this someday
@@ -308,100 +228,74 @@ func home(
 			NotFound(w, r)
 			return
 		}
-		putFlashMessage(r, LevelSuccess, "Welcome!", sessionManager)
-		putFlashMessage(r, LevelSuccess, "You made it!", sessionManager)
 
-		data := newTemplateData(r, sessionManager)
-
-		if err := render.Page(w, http.StatusOK, data, "home.tmpl"); err != nil {
-			ServerError(w, r, err, logger, showTrace)
-			return
-		}
-	}
-}
-
-// contact handles rendering a contact page
-func contact(
-	logger *slog.Logger,
-	showTrace bool,
-	wg *sync.WaitGroup,
-	mailer email.MailerInterface,
-	sessionManager *scs.SessionManager,
-) http.HandlerFunc {
-	type contactForm struct {
-		Name    string
-		Email   string
-		Message string
-		Validator
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		data := newTemplateData(r, sessionManager)
-		data["Form"] = contactForm{}
+		data := newTemplateData(r)
+		form := Form{}
 
 		if r.Method == http.MethodPost {
-			if err := r.ParseForm(); err != nil {
-				BadRequest(w, r, err)
-				return
+			// Maximum upload size of 10 MB
+			err := r.ParseMultipartForm(10 << 20)
+			if err != nil {
+				form.AddError("Form", "Could not process the files provided.")
 			}
 
-			form := contactForm{}
+			// Get the Key field
+			key := r.Form.Get("key")
+			form.Check(MinRunes(key, 1), "Key", "Key is a required field")
+			form.Check(MaxRunes(key, 200), "key", "Key must be less than 200 characters")
 
-			// Populate the form data
-			form.Name = r.FormValue("name")
-			form.Email = r.FormValue("email")
-			form.Message = r.FormValue("message")
+			// Get File1
+			file1, handler1, err := r.FormFile("file1")
+			if err != nil {
+				form.AddError("File1", "Could not process file 1.")
+			}
+			// Validate File1 is a CSV file
+			if filepath.Ext(handler1.Filename) != ".csv" {
+				form.AddError("File1", "This file must be a CSV file ending in '.csv'")
+			}
 
-			// Validate the form
-			form.Check(NotBlank(form.Name), "Name", "Name is required.")
-			form.Check(MaxRunes(form.Name, 100), "Name", "Name must be less than 100 characters.")
-
-			form.Check(NotBlank(form.Email), "Email", "Email is required.")
-			form.Check(IsEmail(form.Email), "Email", "Email must be a valid email address.")
-
-			form.Check(NotBlank(form.Message), "Message", "Message is required.")
-			form.Check(MaxRunes(form.Message, 1000), "Message", "Message must be less than 1,000 characters.")
+			// Get File2
+			file2, handler2, err := r.FormFile("file2")
+			if err != nil {
+				form.AddError("File2", "Could not process file 2.")
+			}
+			// Validate File2 is a CSV file
+			if filepath.Ext(handler2.Filename) != ".csv" {
+				form.AddError("File2", "This file must be a CSV file ending in '.csv'")
+			}
 
 			if form.Valid() {
-				// Email the form message
-				BackgroundTask(wg, logger, func() error {
-					return mailer.Send("Recipient <recipient@example.com>", "Reply-To <reply-to@example.com>", form, "example.tmpl")
-				})
-				// Render the contact success page
-				err := render.Page(w, http.StatusFound, data, "contact-success.tmpl")
+				// Try to diff the files
+				mismatches, err := findMismatches(logger, file1, file2, key, handler1.Filename, handler2.Filename)
 				if err != nil {
 					ServerError(w, r, err, logger, showTrace)
 					return
 				}
+
+				// Set headers
+				w.Header().Set("Content-Type", "text/csv")
+				w.Header().Set("Content-Disposition", `attachment; filename="mismatches.csv"`)
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(mismatches)))
+
+				// Write the mismatch data to the response
+				if _, err := w.Write(mismatches); err != nil {
+					ServerError(w, r, err, logger, showTrace)
+					return
+				}
+
+				// Return to avoid writing anything else in the response
 				return
 			}
 
-			// Update the template data form so the page errors will render
-			data["Form"] = form
-
 		}
 
-		// Render the contact.tmpl page
-		err := render.Page(w, http.StatusOK, data, "contact.tmpl")
+		// Render the home page with the csv file form
+		data["Form"] = form
+		err := render.Page(w, http.StatusOK, data, "home.tmpl")
 		if err != nil {
 			ServerError(w, r, err, logger, showTrace)
 			return
 		}
-	}
-}
-
-// sendEmail sends out a background email task
-func sendEmail(mailer email.MailerInterface, logger *slog.Logger, wg *sync.WaitGroup) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "Email queued")
-		emailData := map[string]any{
-			"Name": "Person",
-		}
-		BackgroundTask(
-			wg, logger,
-			func() error {
-				return mailer.Send("Recipient <recipient@example.com>", "Reply-To <reply-to@example.com>", emailData, "example.tmpl")
-			})
 	}
 }
 
@@ -414,29 +308,14 @@ func health() http.HandlerFunc {
 	}
 }
 
-// protected handles a page protected by basic authentication.
-func protected() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "You're visiting a protected page!")
-	}
-}
-
 //=============================================================================
 // Validation helpers
 //=============================================================================
 
 // newTemplateData constructs a map of data to pass into templates
-func newTemplateData(r *http.Request, sessionManager *scs.SessionManager) map[string]any {
-	messages, ok := sessionManager.Pop(r.Context(), "messages").([]FlashMessage)
-	if !ok {
-		messages = []FlashMessage{}
-	}
-
+func newTemplateData(r *http.Request) map[string]any {
 	return map[string]any{
-		"CSRFToken": nosurf.Token(r),
-		"Messages":  messages,
-		"Version":   vcs.Version(),
+		"Version": vcs.Version(),
 	}
 }
 
@@ -536,57 +415,6 @@ func LogRequestMW(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// CsrfMW protects specific routes against CSRF.
-func CsrfMW(next http.Handler) http.Handler {
-	csrfHandler := nosurf.New(next)
-	csrfHandler.SetBaseCookie(http.Cookie{
-		HttpOnly: true,
-		Path:     "/",
-		Secure:   true,
-	})
-	return csrfHandler
-}
-
-// BasicAuthMW restricts routes for basic authentication
-func BasicAuthMW(username, passwordHash string, logger *slog.Logger, showTrace bool) func(http.Handler) http.Handler {
-	authError := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
-
-		message := "You must be authenticated to access this resource"
-		http.Error(w, message, http.StatusUnauthorized)
-	})
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get basic auth credentials from the request
-			requestUser, requestPass, ok := r.BasicAuth()
-			if !ok {
-				authError(w, r)
-				return
-			}
-
-			// Check if the username matches the request
-			if username != requestUser {
-				authError(w, r)
-				return
-			}
-
-			// Hash and compare the passwords
-			err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(requestPass))
-			switch {
-			case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
-				authError(w, r)
-				return
-			case err != nil:
-				ServerError(w, r, err, logger, showTrace)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 //=============================================================================
 // Validator (validation) functions
 //=============================================================================
@@ -626,8 +454,6 @@ func (v *Validator) Check(ok bool, key, message string) {
 
 // -------------- Validation checks functions --------------------
 
-var RgxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
-
 // NotBlank returns true when a string is not empty.
 func NotBlank(value string) bool {
 	return strings.TrimSpace(value) != ""
@@ -641,116 +467,4 @@ func MinRunes(value string, n int) bool {
 // MaxRunes returns true when the string is <= n runes.
 func MaxRunes(value string, n int) bool {
 	return utf8.RuneCountInString(value) <= n
-}
-
-// Between returns true when the value is between (inclusive) two values.
-func Between[T constraints.Ordered](value, min, max T) bool {
-	return value >= min && value <= max
-}
-
-// Matches returns true when the string matches a given regular expression.
-func Matches(value string, rx *regexp.Regexp) bool {
-	return rx.MatchString(value)
-}
-
-// In returns true when a value is in the safe list of values.
-func In[T comparable](value T, safelist ...T) bool {
-	for i := range safelist {
-		if value == safelist[i] {
-			return true
-		}
-	}
-	return false
-}
-
-// AllIn returns true if all the values are in the safelist of values.
-func AllIn[T comparable](values []T, safelist ...T) bool {
-	for i := range values {
-		if !In(values[i], safelist...) {
-			return false
-		}
-	}
-	return true
-}
-
-// NotIn returns true when the value is not in the blocklist of values.
-func NotIn[T comparable](value T, blocklist ...T) bool {
-	for i := range blocklist {
-		if value == blocklist[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// NoDuplicates returns true when there are no duplicates in the values
-func NoDuplicates[T comparable](values []T) bool {
-	uniqueValues := make(map[T]bool)
-
-	for _, value := range values {
-		uniqueValues[value] = true
-	}
-
-	return len(values) == len(uniqueValues)
-}
-
-// IsEmail returns true when the string value passes an email regular expression pattern.
-func IsEmail(value string) bool {
-	if len(value) > 254 {
-		return false
-	}
-
-	return RgxEmail.MatchString(value)
-}
-
-// IsURL returns true if the value is a valid URL
-func IsURL(value string) bool {
-	u, err := url.ParseRequestURI(value)
-	if err != nil {
-		return false
-	}
-
-	return u.Scheme != "" && u.Host != ""
-}
-
-//=============================================================================
-// Flash Message functions
-//=============================================================================
-
-type contextKey string
-
-const flashMessageKey = "messages"
-
-type FlashMessageLevel string
-
-const (
-	// Different FlashMessageLevel types
-	LevelSuccess FlashMessageLevel = "success"
-	LevelError   FlashMessageLevel = "error"
-	LevelWarning FlashMessageLevel = "warning"
-	LevelInfo    FlashMessageLevel = "info"
-)
-
-type FlashMessage struct {
-	Level   FlashMessageLevel
-	Message string
-}
-
-// putFlashMessage adds a flash message into the session manager
-func putFlashMessage(r *http.Request, level FlashMessageLevel, message string, sessionManager *scs.SessionManager) {
-	newMessage := FlashMessage{
-		Level:   level,
-		Message: message,
-	}
-
-	// Create a new flashMessageKey context key if one doesn't exist and add the message
-	messages, ok := sessionManager.Get(r.Context(), flashMessageKey).([]FlashMessage)
-	if !ok {
-		sessionManager.Put(r.Context(), flashMessageKey, []FlashMessage{newMessage})
-		return
-	}
-
-	// Add a flash message to an existing flashMessageKey context key
-	messages = append(messages, newMessage)
-	sessionManager.Put(r.Context(), flashMessageKey, messages)
 }
