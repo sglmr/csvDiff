@@ -4,7 +4,7 @@ name: 'push to dokku'
 on:
   push:
     branches:
-      - replace-with-main
+      - main
 
 jobs:
   deploy:
