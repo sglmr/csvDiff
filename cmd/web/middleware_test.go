@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gotest.tools/assert"
+	"github.com/sglmr/csvdiff/internal/assert"
 )
 
 func TestSecureHeadersMW(t *testing.T) {

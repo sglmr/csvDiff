@@ -2,20 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
-	"mime/multipart"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -26,8 +22,6 @@ import (
 	"github.com/sglmr/csvdiff/assets"
 	"github.com/sglmr/csvdiff/internal/render"
 	"github.com/sglmr/csvdiff/internal/vcs"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/exp/constraints"
 )
 
 //=============================================================================
@@ -278,21 +272,13 @@ func home(logger *slog.Logger, showTrace bool) http.HandlerFunc {
 					return
 				}
 
-				// Set up multipart response
-				mw := multipart.NewWriter(w)
-				defer mw.Close()
-				w.Header().Set("Content-Type", mw.FormDataContentType())
+				// Set headers
+				w.Header().Set("Content-Type", "text/csv")
 				w.Header().Set("Content-Disposition", `attachment; filename="mismatches.csv"`)
-
-				// Create a form file to return in the response
-				part, err := mw.CreateFormFile("file", "mismatches.csv")
-				if err != nil {
-					ServerError(w, r, err, logger, showTrace)
-					return
-				}
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(mismatches)))
 
 				// Write the mismatch data to the response
-				if _, err := part.Write(mismatches); err != nil {
+				if _, err := w.Write(mismatches); err != nil {
 					ServerError(w, r, err, logger, showTrace)
 					return
 				}
@@ -429,46 +415,6 @@ func LogRequestMW(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// BasicAuthMW restricts routes for basic authentication
-func BasicAuthMW(username, passwordHash string, logger *slog.Logger, showTrace bool) func(http.Handler) http.Handler {
-	authError := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
-
-		message := "You must be authenticated to access this resource"
-		http.Error(w, message, http.StatusUnauthorized)
-	})
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get basic auth credentials from the request
-			requestUser, requestPass, ok := r.BasicAuth()
-			if !ok {
-				authError(w, r)
-				return
-			}
-
-			// Check if the username matches the request
-			if username != requestUser {
-				authError(w, r)
-				return
-			}
-
-			// Hash and compare the passwords
-			err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(requestPass))
-			switch {
-			case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
-				authError(w, r)
-				return
-			case err != nil:
-				ServerError(w, r, err, logger, showTrace)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 //=============================================================================
 // Validator (validation) functions
 //=============================================================================
@@ -508,8 +454,6 @@ func (v *Validator) Check(ok bool, key, message string) {
 
 // -------------- Validation checks functions --------------------
 
-var RgxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
-
 // NotBlank returns true when a string is not empty.
 func NotBlank(value string) bool {
 	return strings.TrimSpace(value) != ""
@@ -523,74 +467,4 @@ func MinRunes(value string, n int) bool {
 // MaxRunes returns true when the string is <= n runes.
 func MaxRunes(value string, n int) bool {
 	return utf8.RuneCountInString(value) <= n
-}
-
-// Between returns true when the value is between (inclusive) two values.
-func Between[T constraints.Ordered](value, min, max T) bool {
-	return value >= min && value <= max
-}
-
-// Matches returns true when the string matches a given regular expression.
-func Matches(value string, rx *regexp.Regexp) bool {
-	return rx.MatchString(value)
-}
-
-// In returns true when a value is in the safe list of values.
-func In[T comparable](value T, safelist ...T) bool {
-	for i := range safelist {
-		if value == safelist[i] {
-			return true
-		}
-	}
-	return false
-}
-
-// AllIn returns true if all the values are in the safelist of values.
-func AllIn[T comparable](values []T, safelist ...T) bool {
-	for i := range values {
-		if !In(values[i], safelist...) {
-			return false
-		}
-	}
-	return true
-}
-
-// NotIn returns true when the value is not in the blocklist of values.
-func NotIn[T comparable](value T, blocklist ...T) bool {
-	for i := range blocklist {
-		if value == blocklist[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// NoDuplicates returns true when there are no duplicates in the values
-func NoDuplicates[T comparable](values []T) bool {
-	uniqueValues := make(map[T]bool)
-
-	for _, value := range values {
-		uniqueValues[value] = true
-	}
-
-	return len(values) == len(uniqueValues)
-}
-
-// IsEmail returns true when the string value passes an email regular expression pattern.
-func IsEmail(value string) bool {
-	if len(value) > 254 {
-		return false
-	}
-
-	return RgxEmail.MatchString(value)
-}
-
-// IsURL returns true if the value is a valid URL
-func IsURL(value string) bool {
-	u, err := url.ParseRequestURI(value)
-	if err != nil {
-		return false
-	}
-
-	return u.Scheme != "" && u.Host != ""
 }

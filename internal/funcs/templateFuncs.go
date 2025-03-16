@@ -9,12 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 )
-
-var printer = message.NewPrinter(language.English)
 
 var TemplateFuncs = template.FuncMap{
 	// Time functions
@@ -78,12 +73,12 @@ func formatInt(i any) (string, error) {
 		return "", err
 	}
 
-	return printer.Sprintf("%d", n), nil
+	return fmt.Sprintf("%d", n), nil
 }
 
 func formatFloat(f float64, dp int) string {
 	format := "%." + strconv.Itoa(dp) + "f"
-	return printer.Sprintf(format, f)
+	return fmt.Sprintf(format, f)
 }
 
 func yesno(b bool) string {

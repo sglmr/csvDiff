@@ -39,12 +39,12 @@ func findMismatches(logger *slog.Logger, file1, file2 io.Reader, key, file1Name,
 	logger.Debug("read input files", "file1 count", len(file1Data), "file2 count", len(file2Data))
 
 	// Compare file1 fields to file2
-	file1Data, m := normalizeFields(file1Data, getFieldNames(file2Data[0]), file1Name)
+	file1Data, m := normalizeColumns(file1Data, getFieldNames(file2Data[0]), file1Name)
 	mismatches = append(mismatches, m...)
 	logger.Debug("checked for extra fields on file1 file", "mismatch count", len(mismatches))
 
 	// Compare file2 fields to file1.
-	file2Data, m = normalizeFields(file2Data, getFieldNames(file1Data[0]), file2Name)
+	file2Data, m = normalizeColumns(file2Data, getFieldNames(file1Data[0]), file2Name)
 	mismatches = append(mismatches, m...)
 	logger.Debug("checked for extra fields on file2 file", "mismatch count", len(mismatches))
 
@@ -59,7 +59,7 @@ func findMismatches(logger *slog.Logger, file1, file2 io.Reader, key, file1Name,
 	logger.Debug("checked for duplicate records on file2 file", "mismatch count", len(mismatches))
 
 	// check missing records between the file1 and file2 files
-	file1Data, file2Data, m = checkMissing(file1Data, file2Data, key)
+	file1Data, file2Data, m = checkMissing(file1Data, file2Data, key, file1Name, file2Name)
 	mismatches = append(mismatches, m...)
 	logger.Debug("checked for missing data between the files", "mismatch count", len(mismatches))
 
@@ -71,7 +71,7 @@ func findMismatches(logger *slog.Logger, file1, file2 io.Reader, key, file1Name,
 	writer := csv.NewWriter(buf)
 
 	// Write header
-	header := []string{"Key", "Field", "File1", "File2", "Message"}
+	header := []string{key, "Field", file1Name, file2Name, "Error"}
 	if err := writer.Write(header); err != nil {
 		return nil, err
 	}
@@ -84,6 +84,7 @@ func findMismatches(logger *slog.Logger, file1, file2 io.Reader, key, file1Name,
 		}
 	}
 
+	// Write remaining data to the buffer
 	writer.Flush()
 	if err := writer.Error(); err != nil {
 		return nil, err
@@ -115,7 +116,7 @@ func fieldCompare(file1, file2 []map[string]string, key string) []mismatch {
 				field:   f,
 				file1:   bRow[f],
 				file2:   aRow[f],
-				message: "field changed",
+				message: "data mismatch",
 			}
 			mismatches = append(mismatches, m)
 		}
@@ -136,7 +137,7 @@ func findRow(data []map[string]string, key, value string) map[string]string {
 }
 
 // Checks for missing records between the two csv files. Any missing records are returned as mismatches.
-func checkMissing(file1, file2 []map[string]string, key string) ([]map[string]string, []map[string]string, []mismatch) {
+func checkMissing(file1, file2 []map[string]string, key, file1Name, file2Name string) ([]map[string]string, []map[string]string, []mismatch) {
 	var (
 		mismatches []mismatch
 		newfile1   []map[string]string
@@ -158,7 +159,7 @@ func checkMissing(file1, file2 []map[string]string, key string) ([]map[string]st
 			field:   key,
 			file1:   record[key],
 			file2:   "missing",
-			message: fmt.Sprintf("'file2' file missing record with key '%v'", record[key]),
+			message: fmt.Sprintf("'%s' missing record with %s '%v'", file2Name, key, record[key]),
 		})
 	}
 
@@ -177,7 +178,7 @@ func checkMissing(file1, file2 []map[string]string, key string) ([]map[string]st
 			field:   key,
 			file1:   "missing",
 			file2:   record[key],
-			message: fmt.Sprintf("'file1' file missing record with key '%v'", record[key]),
+			message: fmt.Sprintf("'%s' missing record with %s '%v'", file1Name, key, record[key]),
 		})
 	}
 
@@ -222,7 +223,7 @@ func deDuplicate(data []map[string]string, key, name string) ([]map[string]strin
 			field:   key,
 			file1:   "n/a",
 			file2:   "n/a",
-			message: fmt.Sprintf("duplicate '%v' in '%v' file at row %v", key, name, i+1),
+			message: fmt.Sprintf("duplicate '%v' on '%v' at row %v", key, name, i+1),
 		}
 		mismatches = append(mismatches, m)
 
@@ -230,9 +231,9 @@ func deDuplicate(data []map[string]string, key, name string) ([]map[string]strin
 	return result, mismatches
 }
 
-// Checks the columns of the "data" file to see if it has any fields that aren't in the slice
-// of fields provided as the second argument
-func normalizeFields(data []map[string]string, fields []string, name string) ([]map[string]string, []mismatch) {
+// normalizeColumns checks the columns to see if it has any columns (fields)
+// that aren't in the slice of fields from the other file.
+func normalizeColumns(data []map[string]string, fields []string, name string) ([]map[string]string, []mismatch) {
 	var mismatches []mismatch
 	dataFields := getFieldNames(data[0])
 
@@ -266,7 +267,7 @@ func normalizeFields(data []map[string]string, fields []string, name string) ([]
 			field:   f,
 			file1:   "n/a",
 			file2:   "n/a",
-			message: fmt.Sprintf("field '%v' only found on '%v' file, excluded from comparison", f, name),
+			message: fmt.Sprintf("extra column '%v' on '%v' file", f, name),
 		}
 		mismatches = append(mismatches, m)
 	}
