@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -174,10 +175,9 @@ func AddRoutes(mux *http.ServeMux, logger *slog.Logger, devMode bool) http.Handl
 	mux.Handle("GET /static/", CacheControlMW("31536000")(fileServer))
 
 	mux.Handle("GET /", home(logger, devMode))
+	mux.Handle("POST /", home(logger, devMode))
+
 	mux.Handle("GET /health/", health())
-	// TODO: Figure out how to wrap this with nosurf
-	mux.Handle("GET /contact/", contact(logger, devMode))
-	mux.Handle("POST /contact/", contact(logger, devMode))
 
 	// Add recoverPanic middleware
 	handler := RecoverPanicMW(mux, logger, devMode)
@@ -223,6 +223,10 @@ func BadRequest(w http.ResponseWriter, r *http.Request, err error) {
 
 // home handles the root route
 func home(logger *slog.Logger, showTrace bool) http.HandlerFunc {
+	type Form struct {
+		Validator
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Redirect non-root paths to root
 		// TODO: write a test for this someday
@@ -232,67 +236,76 @@ func home(logger *slog.Logger, showTrace bool) http.HandlerFunc {
 		}
 
 		data := newTemplateData(r)
-
-		if err := render.Page(w, http.StatusOK, data, "home.tmpl"); err != nil {
-			ServerError(w, r, err, logger, showTrace)
-			return
-		}
-	}
-}
-
-// contact handles rendering a contact page
-func contact(logger *slog.Logger, showTrace bool) http.HandlerFunc {
-	type contactForm struct {
-		Name    string
-		Email   string
-		Message string
-		Validator
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		data := newTemplateData(r)
-		data["Form"] = contactForm{}
+		form := Form{}
 
 		if r.Method == http.MethodPost {
-			if err := r.ParseForm(); err != nil {
-				BadRequest(w, r, err)
-				return
+			// Maximum upload size of 10 MB
+			err := r.ParseMultipartForm(10 << 20)
+			if err != nil {
+				form.AddError("Form", "Could not process the files provided.")
 			}
 
-			form := contactForm{}
+			// Get the Key field
+			key := r.Form.Get("key")
+			form.Check(MinRunes(key, 1), "Key", "Key is a required field")
+			form.Check(MaxRunes(key, 200), "key", "Key must be less than 200 characters")
 
-			// Populate the form data
-			form.Name = r.FormValue("name")
-			form.Email = r.FormValue("email")
-			form.Message = r.FormValue("message")
+			// Get File1
+			file1, handler1, err := r.FormFile("file1")
+			if err != nil {
+				form.AddError("File1", "Could not process file 1.")
+			}
+			// Validate File1 is a CSV file
+			if filepath.Ext(handler1.Filename) != ".csv" {
+				form.AddError("File1", "This file must be a CSV file ending in '.csv'")
+			}
 
-			// Validate the form
-			form.Check(NotBlank(form.Name), "Name", "Name is required.")
-			form.Check(MaxRunes(form.Name, 100), "Name", "Name must be less than 100 characters.")
-
-			form.Check(NotBlank(form.Email), "Email", "Email is required.")
-			form.Check(IsEmail(form.Email), "Email", "Email must be a valid email address.")
-
-			form.Check(NotBlank(form.Message), "Message", "Message is required.")
-			form.Check(MaxRunes(form.Message, 1000), "Message", "Message must be less than 1,000 characters.")
+			// Get File2
+			file2, handler2, err := r.FormFile("file2")
+			if err != nil {
+				form.AddError("File2", "Could not process file 2.")
+			}
+			// Validate File2 is a CSV file
+			if filepath.Ext(handler2.Filename) != ".csv" {
+				form.AddError("File2", "This file must be a CSV file ending in '.csv'")
+			}
 
 			if form.Valid() {
-				// TODO: do something with the valid form
-				// Render the contact success page
-				err := render.Page(w, http.StatusFound, data, "contact-success.tmpl")
+				// Try to diff the files
+				mismatches, err := findMismatches(logger, file1, file2, key, handler1.Filename, handler2.Filename)
 				if err != nil {
 					ServerError(w, r, err, logger, showTrace)
 					return
 				}
+
+				// Set up multipart response
+				mw := multipart.NewWriter(w)
+				defer mw.Close()
+				w.Header().Set("Content-Type", mw.FormDataContentType())
+				w.Header().Set("Content-Disposition", `attachment; filename="mismatches.csv"`)
+
+				// Create a form file to return in the response
+				part, err := mw.CreateFormFile("file", "mismatches.csv")
+				if err != nil {
+					ServerError(w, r, err, logger, showTrace)
+					return
+				}
+
+				// Write the mismatch data to the response
+				if _, err := part.Write(mismatches); err != nil {
+					ServerError(w, r, err, logger, showTrace)
+					return
+				}
+
+				// Return to avoid writing anything else in the response
 				return
 			}
 
-			// Update the template data form so the page errors will render
-			data["Form"] = form
-
 		}
 
-		// Render the contact.tmpl page
-		err := render.Page(w, http.StatusOK, data, "contact.tmpl")
+		// Render the home page with the csv file form
+		data["Form"] = form
+		err := render.Page(w, http.StatusOK, data, "home.tmpl")
 		if err != nil {
 			ServerError(w, r, err, logger, showTrace)
 			return
